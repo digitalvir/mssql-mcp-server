@@ -87,6 +87,7 @@ export {
   ListScriptsTool,
   ListTableTool,
   ProfileTableTool,
+  RawQueryTool,
   ReadDataTool,
   RelationshipInspectorTool,
   RollbackTransactionTool,

@@ -2,6 +2,21 @@
 
 Shared core library for the MSSQL MCP tiered package family. This package provides every tool class, the MCP server harness, environment management, audit logging, secret resolution, intent routing, and policy enforcement middleware. Consumer packages (reader, writer, server) depend on this library and call `startMcpServer()` with a tier to get a fully configured MCP server.
 
+## Install (this fork)
+
+This fork is directly runnable — it ships its own `mssql-mcp-server` bin. Install globally straight from the repo:
+
+```
+npm install -g github:digitalvir/mssql-mcp-server
+```
+
+Then point your MCP client at the `mssql-mcp-server` command, configured via `ENVIRONMENTS_CONFIG_PATH` (multi-environment JSON) or the `SERVER_NAME`/`DATABASE_NAME`/`SQL_*` env vars (single environment).
+
+This fork differs from upstream:
+- Adds the **`raw_query`** tool — executes arbitrary SQL (EXEC, multi-statement, DDL) with no validation.
+- Relaxes `read_data` query validation (keeps the SELECT-only + single-statement guards).
+- Exposes a **curated 12-tool set** (read-only discovery/diagnostics + `raw_query`); DML, DDL, transaction, and script tools are not registered.
+
 ## Architecture
 
 ```

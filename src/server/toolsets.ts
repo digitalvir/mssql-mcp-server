@@ -16,6 +16,7 @@ import { ListEnvironmentsTool } from "../tools/ListEnvironmentsTool.js";
 import { ListScriptsTool } from "../tools/ListScriptsTool.js";
 import { ListTableTool } from "../tools/ListTableTool.js";
 import { ProfileTableTool } from "../tools/ProfileTableTool.js";
+import { RawQueryTool } from "../tools/RawQueryTool.js";
 import { ReadDataTool } from "../tools/ReadDataTool.js";
 import { RelationshipInspectorTool } from "../tools/RelationshipInspectorTool.js";
 import { RollbackTransactionTool } from "../tools/RollbackTransactionTool.js";
@@ -45,6 +46,7 @@ export function createAllToolInstances() {
     listScriptsTool: new ListScriptsTool() as RunnableTool,
     listTableTool: new ListTableTool() as RunnableTool,
     profileTableTool: new ProfileTableTool() as RunnableTool,
+    rawQueryTool: new RawQueryTool() as RunnableTool,
     readDataTool: new ReadDataTool() as RunnableTool,
     relationshipInspectorTool: new RelationshipInspectorTool() as RunnableTool,
     rollbackTransactionTool: new RollbackTransactionTool() as RunnableTool,
@@ -90,13 +92,21 @@ export function getWriterTools(t: AllTools): RunnableTool[] {
   ];
 }
 
-/** 20 tools: writer tools + create table/index, drop table */
+/** 12 curated tools: read-only discovery/diagnostics + raw_query escape hatch */
 export function getAdminTools(t: AllTools): RunnableTool[] {
   return [
-    ...getWriterTools(t),
-    t.createTableTool,
-    t.createIndexTool,
-    t.dropTableTool,
+    t.readDataTool,
+    t.rawQueryTool,
+    t.listTableTool,
+    t.listDatabasesTool,
+    t.listEnvironmentsTool,
+    t.describeTableTool,
+    t.searchSchemaTool,
+    t.profileTableTool,
+    t.relationshipInspectorTool,
+    t.inspectDependenciesTool,
+    t.testConnectionTool,
+    t.explainQueryTool,
   ];
 }
 
@@ -140,6 +150,7 @@ export const ADMIN_MUTATING_TOOLS = new Set([
   "create_table",
   "create_index",
   "drop_table",
+  "raw_query",
   "begin_transaction",
   "commit_transaction",
   "rollback_transaction",
@@ -205,6 +216,14 @@ export function buildToolRegistry(t: AllTools): ToolRoutingConfig[] {
       keywords: ["select", "query", "fetch", "report", "count"],
       requiredArgs: ["query"],
       baseScore: 2,
+    },
+    {
+      tool: t.rawQueryTool,
+      name: t.rawQueryTool.name,
+      intents: ["data_read", "data_write", "schema_change"],
+      keywords: ["exec", "execute", "raw", "stored procedure", "proc", "any sql"],
+      requiredArgs: ["query"],
+      mutatesData: true,
     },
     {
       tool: t.listTableTool,

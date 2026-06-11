@@ -15,6 +15,7 @@ export { ListEnvironmentsTool } from "./ListEnvironmentsTool.js";
 export { ListScriptsTool } from "./ListScriptsTool.js";
 export { ListTableTool } from "./ListTableTool.js";
 export { ProfileTableTool } from "./ProfileTableTool.js";
+export { RawQueryTool } from "./RawQueryTool.js";
 export { ReadDataTool } from "./ReadDataTool.js";
 export { RelationshipInspectorTool } from "./RelationshipInspectorTool.js";
 export { RollbackTransactionTool } from "./RollbackTransactionTool.js";

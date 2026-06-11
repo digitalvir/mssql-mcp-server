@@ -42,63 +42,15 @@ export class ReadDataTool implements Tool {
 
   // List of dangerous SQL keywords that should not be allowed
   private static readonly DANGEROUS_KEYWORDS = [
-    'DELETE', 'DROP', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 
-    'TRUNCATE', 'EXEC', 'EXECUTE', 'MERGE', 'REPLACE',
-    'GRANT', 'REVOKE', 'COMMIT', 'ROLLBACK', 'TRANSACTION',
-    'BEGIN', 'DECLARE', 'SET', 'USE', 'BACKUP',
-    'RESTORE', 'KILL', 'SHUTDOWN', 'WAITFOR', 'OPENROWSET',
-    'OPENDATASOURCE', 'OPENQUERY', 'OPENXML', 'BULK', 'INTO'
+    'DELETE', 'DROP', 'UPDATE', 'INSERT', 'ALTER', 'CREATE',
+    'TRUNCATE', 'MERGE', 'REPLACE',
+    'GRANT', 'REVOKE', 'BACKUP', 'RESTORE',
+    'KILL', 'SHUTDOWN', 'OPENROWSET',
+    'OPENDATASOURCE', 'OPENQUERY', 'OPENXML', 'BULK'
   ];
 
   // Regex patterns to detect common SQL injection techniques
-  private static readonly DANGEROUS_PATTERNS = [
-
-    // SELECT INTO operations that create new tables
-    /SELECT\s+.*?\s+INTO\s+/i,
-    // Semicolon followed by dangerous keywords
-    /;\s*(DELETE|DROP|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE|REPLACE|GRANT|REVOKE)/i,
-    
-    // UNION injection attempts with dangerous keywords
-    /UNION\s+(?:ALL\s+)?SELECT.*?(DELETE|DROP|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)/i,
-    
-    // Comment-based injection attempts
-    /--.*?(DELETE|DROP|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)/i,
-    /\/\*.*?(DELETE|DROP|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE).*?\*\//i,
-    
-    // Stored procedure execution patterns
-    /EXEC\s*\(/i,
-    /EXECUTE\s*\(/i,
-    /sp_/i,
-    /xp_/i,
-    
-    // Dynamic SQL construction
-    /EXEC\s*\(/i,
-    /EXECUTE\s*\(/i,
-    
-    // Bulk operations
-    /BULK\s+INSERT/i,
-    /OPENROWSET/i,
-    /OPENDATASOURCE/i,
-    
-    // System functions that could be dangerous
-    /@@/,
-    /SYSTEM_USER/i,
-    /USER_NAME/i,
-    /DB_NAME/i,
-    /HOST_NAME/i,
-    
-    // Time delay attacks
-    /WAITFOR\s+DELAY/i,
-    /WAITFOR\s+TIME/i,
-    
-    // Multiple statements (semicolon not at end)
-    /;\s*\w/,
-    
-    // String concatenation that might hide malicious code
-    /\+\s*CHAR\s*\(/i,
-    /\+\s*NCHAR\s*\(/i,
-    /\+\s*ASCII\s*\(/i,
-  ];
+  private static readonly DANGEROUS_PATTERNS: RegExp[] = [];
 
   /**
    * Validates the SQL query for security issues
@@ -165,14 +117,6 @@ export class ReadDataTool implements Tool {
       return { 
         isValid: false, 
         error: 'Multiple SQL statements are not allowed. Use only a single SELECT statement.' 
-      };
-    }
-
-    // Check for suspicious string patterns that might indicate obfuscation
-    if (query.includes('CHAR(') || query.includes('NCHAR(') || query.includes('ASCII(')) {
-      return { 
-        isValid: false, 
-        error: 'Character conversion functions are not allowed as they may be used for obfuscation.' 
       };
     }
 
