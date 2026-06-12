@@ -1,0 +1,1 @@
+{"version":3,"file":"RollbackTransactionTool.d.ts","sourceRoot":"","sources":["../../src/tools/RollbackTransactionTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAE1D,qBAAa,uBAAwB,YAAW,IAAI;IAClD,CAAC,GAAG,EAAE,MAAM,GAAG,GAAG,CAAC;IACnB,IAAI,SAA0B;IAC9B,WAAW,SAC4F;IACvG,WAAW,EASN,GAAG,CAAC;IAEH,GAAG,CAAC,MAAM,EAAE,GAAG;;;;;;;;;;;;;CA6BtB"}

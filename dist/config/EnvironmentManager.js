@@ -1,0 +1,401 @@
+import * as fs from "fs";
+import * as path from "path";
+import { InteractiveBrowserCredential } from "@azure/identity";
+import sql from "mssql";
+import { SecretResolver, createSecretResolver } from "./SecretResolver.js";
+export class EnvironmentManager {
+    constructor() {
+        this.environments = new Map();
+        this.connections = new Map();
+        // Temporary default — will be replaced during create() or loadFromEnvVars()
+        this.secretResolver = new SecretResolver([]);
+    }
+    /**
+     * Async factory method. Use this instead of `new EnvironmentManager()`.
+     */
+    static async create(configPath) {
+        const manager = new EnvironmentManager();
+        if (configPath) {
+            await manager.loadFromFile(configPath);
+        }
+        else {
+            manager.loadFromEnvVars();
+        }
+        return manager;
+    }
+    getSecretResolver() {
+        return this.secretResolver;
+    }
+    /**
+     * Get the raw environments config (before secret resolution).
+     * Used by createMcpServer to read audit sink configurations.
+     */
+    getRawConfig() {
+        return this.rawConfig;
+    }
+    async loadFromFile(configPath) {
+        try {
+            const resolvedPath = path.resolve(configPath);
+            if (!fs.existsSync(resolvedPath)) {
+                console.warn(`Environment config file not found at ${resolvedPath}, falling back to env vars`);
+                this.loadFromEnvVars();
+                return;
+            }
+            const configContent = fs.readFileSync(resolvedPath, "utf-8");
+            const config = JSON.parse(configContent);
+            // Build the secret resolver from config or fallback to DOTENV_PATH
+            let secretsConfig = config.secrets;
+            if (!secretsConfig) {
+                const dotenvPath = process.env.DOTENV_PATH;
+                if (dotenvPath) {
+                    secretsConfig = { providers: [{ type: "env" }, { type: "dotenv", path: dotenvPath }] };
+                    console.error(`Using DOTENV_PATH fallback: ${dotenvPath}`);
+                }
+            }
+            this.secretResolver = await createSecretResolver(secretsConfig);
+            this.defaultEnvironment = config.defaultEnvironment;
+            // Store raw configs so we can re-resolve when secrets rotate
+            this.rawConfig = config;
+            this.rawEnvironments = config.environments;
+            for (const env of config.environments) {
+                // Resolve any secret placeholders in the config
+                const resolvedEnv = this.secretResolver.resolveObject(env);
+                this.environments.set(resolvedEnv.name, resolvedEnv);
+            }
+            // Start background refresh timer if any provider has a TTL
+            this.startRefreshTimer();
+            console.error(`Loaded ${this.environments.size} environment(s) from ${resolvedPath}`);
+        }
+        catch (error) {
+            console.error(`Failed to load environment config: ${error}`);
+            this.loadFromEnvVars();
+        }
+    }
+    loadFromEnvVars() {
+        // Env-var-only path: no vault providers, use a minimal env-only resolver
+        // createSecretResolver() defaults to env provider, but is async now.
+        // Since loadFromEnvVars is sync and only needs env vars, build the resolver directly.
+        this.secretResolver = new SecretResolver([]);
+        const server = process.env.SERVER_NAME;
+        const database = process.env.DATABASE_NAME;
+        if (!server || !database) {
+            throw new Error("No environment config file provided and SERVER_NAME/DATABASE_NAME env vars not set");
+        }
+        const defaultEnv = {
+            name: "default",
+            server,
+            database,
+            port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : undefined,
+            authMode: process.env.SQL_AUTH_MODE?.toLowerCase() ?? "aad",
+            username: process.env.SQL_USERNAME,
+            password: process.env.SQL_PASSWORD,
+            domain: process.env.SQL_DOMAIN,
+            trustServerCertificate: process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === "true",
+            connectionTimeout: process.env.CONNECTION_TIMEOUT
+                ? parseInt(process.env.CONNECTION_TIMEOUT, 10)
+                : 30,
+            readonly: process.env.READONLY === "true",
+        };
+        this.environments.set("default", defaultEnv);
+        this.defaultEnvironment = "default";
+        console.error("Loaded default environment from environment variables");
+    }
+    getEnvironment(name) {
+        const targetName = name || this.defaultEnvironment || "default";
+        const env = this.environments.get(targetName);
+        if (!env) {
+            throw new Error(`Environment '${targetName}' not found. Available: ${Array.from(this.environments.keys()).join(", ")}`);
+        }
+        return env;
+    }
+    listEnvironments() {
+        return Array.from(this.environments.values());
+    }
+    /**
+     * Check if the environment allows access to a specific database.
+     * For database-level access, only the configured database is allowed.
+     * For server-level access, checks allowedDatabases/deniedDatabases.
+     */
+    isDatabaseAllowed(environmentName, databaseName) {
+        const env = this.getEnvironment(environmentName);
+        const accessLevel = env.accessLevel ?? "database";
+        // Database-level access: only the configured database is allowed
+        if (accessLevel === "database") {
+            if (databaseName.toLowerCase() !== env.database.toLowerCase()) {
+                return {
+                    allowed: false,
+                    reason: `Environment '${env.name}' has database-level access and is restricted to database '${env.database}'. Cannot access '${databaseName}'.`,
+                };
+            }
+            return { allowed: true };
+        }
+        // Server-level access: check allow/deny lists
+        const deniedDatabases = env.deniedDatabases ?? [];
+        const allowedDatabases = env.allowedDatabases;
+        // Check denied list first (takes precedence)
+        if (deniedDatabases.some((db) => db.toLowerCase() === databaseName.toLowerCase())) {
+            return {
+                allowed: false,
+                reason: `Database '${databaseName}' is in the denied list for environment '${env.name}'.`,
+            };
+        }
+        // Check allowed list
+        if (allowedDatabases === "*") {
+            return { allowed: true };
+        }
+        if (Array.isArray(allowedDatabases) && allowedDatabases.length > 0) {
+            if (!allowedDatabases.some((db) => db.toLowerCase() === databaseName.toLowerCase())) {
+                return {
+                    allowed: false,
+                    reason: `Database '${databaseName}' is not in the allowed list for environment '${env.name}'. Allowed: ${allowedDatabases.join(", ")}.`,
+                };
+            }
+        }
+        return { allowed: true };
+    }
+    /**
+     * Check if a schema.table reference is allowed based on allowedSchemas/deniedSchemas.
+     * Pattern matching supports wildcards (e.g., "audit.*", "*.sensitive_*")
+     */
+    isSchemaAllowed(environmentName, schemaName, tableName) {
+        const env = this.getEnvironment(environmentName);
+        const fullRef = tableName ? `${schemaName}.${tableName}` : schemaName;
+        const deniedSchemas = env.deniedSchemas ?? [];
+        const allowedSchemas = env.allowedSchemas;
+        // Check denied patterns first
+        for (const pattern of deniedSchemas) {
+            if (this.matchesPattern(fullRef, pattern) || this.matchesPattern(schemaName, pattern)) {
+                return {
+                    allowed: false,
+                    reason: `Schema/table '${fullRef}' matches denied pattern '${pattern}' in environment '${env.name}'.`,
+                };
+            }
+        }
+        // If allowedSchemas is specified, check against it
+        if (allowedSchemas && allowedSchemas.length > 0) {
+            const isAllowed = allowedSchemas.some((pattern) => this.matchesPattern(fullRef, pattern) || this.matchesPattern(schemaName, pattern));
+            if (!isAllowed) {
+                return {
+                    allowed: false,
+                    reason: `Schema/table '${fullRef}' does not match any allowed pattern in environment '${env.name}'. Allowed: ${allowedSchemas.join(", ")}.`,
+                };
+            }
+        }
+        return { allowed: true };
+    }
+    /**
+     * Simple wildcard pattern matching (supports * as wildcard)
+     */
+    matchesPattern(value, pattern) {
+        const regexPattern = pattern
+            .replace(/[.+?^${}()|[\]\\]/g, "\\$&") // Escape special regex chars except *
+            .replace(/\*/g, ".*"); // Convert * to .*
+        const regex = new RegExp(`^${regexPattern}$`, "i");
+        return regex.test(value);
+    }
+    async getConnection(environmentName) {
+        const env = this.getEnvironment(environmentName);
+        const cached = this.connections.get(env.name);
+        // Check if we have a valid cached connection
+        if (cached &&
+            cached.pool.connected &&
+            (!cached.expiresOn || cached.expiresOn > new Date(Date.now() + 2 * 60 * 1000))) {
+            // Health check: verify the pool can actually execute a query
+            try {
+                const req = new sql.Request(cached.pool);
+                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("health check timeout")), 5000));
+                await Promise.race([req.query("SELECT 1"), timeout]);
+                return cached.pool;
+            }
+            catch {
+                console.warn(`[mssql] Pool health check failed for '${env.name}', reconnecting...`);
+                try {
+                    await cached.pool.close();
+                }
+                catch { /* ignore close errors */ }
+                this.connections.delete(env.name);
+            }
+        }
+        // Create new connection
+        const { config, expiresOn } = await this.createSqlConfig(env);
+        // Close old connection if exists
+        if (cached?.pool && cached.pool.connected) {
+            try {
+                await cached.pool.close();
+            }
+            catch { /* ignore close errors */ }
+        }
+        const pool = new sql.ConnectionPool(config);
+        pool.on("error", (err) => {
+            console.error(`[mssql] Pool error for '${env.name}':`, err.message);
+        });
+        await pool.connect();
+        this.connections.set(env.name, { pool, expiresOn });
+        return pool;
+    }
+    async createSqlConfig(env) {
+        const baseConfig = {
+            server: env.server,
+            database: env.database,
+            port: env.port,
+            connectionTimeout: (env.connectionTimeout || 30) * 1000,
+            requestTimeout: (env.requestTimeout || 120) * 1000,
+            pool: {
+                max: 10,
+                min: 0,
+                idleTimeoutMillis: 30000,
+            },
+        };
+        if (env.authMode === "sql") {
+            if (!env.username || !env.password) {
+                throw new Error(`Environment '${env.name}' requires username and password for SQL auth`);
+            }
+            return {
+                config: {
+                    ...baseConfig,
+                    user: env.username,
+                    password: env.password,
+                    options: {
+                        encrypt: false,
+                        trustServerCertificate: env.trustServerCertificate ?? false,
+                    },
+                },
+            };
+        }
+        if (env.authMode === "windows") {
+            if (!env.username || !env.password) {
+                throw new Error(`Environment '${env.name}' requires username and password for Windows auth`);
+            }
+            // Strip DOMAIN\ prefix from username if present — tedious NTLM expects
+            // the username and domain as separate fields
+            let ntlmUser = env.username;
+            let ntlmDomain = env.domain || "";
+            const backslashIndex = ntlmUser.indexOf("\\");
+            if (backslashIndex !== -1) {
+                if (!ntlmDomain) {
+                    ntlmDomain = ntlmUser.substring(0, backslashIndex);
+                }
+                ntlmUser = ntlmUser.substring(backslashIndex + 1);
+            }
+            return {
+                config: {
+                    ...baseConfig,
+                    options: {
+                        encrypt: false,
+                        trustServerCertificate: env.trustServerCertificate ?? false,
+                    },
+                    authentication: {
+                        type: "ntlm",
+                        options: {
+                            userName: ntlmUser,
+                            password: env.password,
+                            domain: ntlmDomain,
+                        },
+                    },
+                },
+            };
+        }
+        // Azure AD auth
+        const credential = new InteractiveBrowserCredential({
+            redirectUri: "http://localhost",
+        });
+        const accessToken = await credential.getToken("https://database.windows.net/.default");
+        if (!accessToken?.token) {
+            throw new Error(`Failed to acquire Azure AD token for environment '${env.name}'`);
+        }
+        return {
+            config: {
+                ...baseConfig,
+                options: {
+                    encrypt: true,
+                    trustServerCertificate: env.trustServerCertificate ?? false,
+                },
+                authentication: {
+                    type: "azure-active-directory-access-token",
+                    options: {
+                        token: accessToken.token,
+                    },
+                },
+            },
+            expiresOn: accessToken?.expiresOnTimestamp
+                ? new Date(accessToken.expiresOnTimestamp)
+                : new Date(Date.now() + 30 * 60 * 1000),
+        };
+    }
+    /**
+     * Start a background timer that periodically checks vault provider TTLs
+     * and re-resolves environment configs when secrets change.
+     */
+    startRefreshTimer() {
+        const ttl = this.secretResolver.shortestTtlSeconds;
+        if (!ttl)
+            return; // no providers with TTL configured
+        // Check at half the shortest TTL interval (but at least every 30s, at most every 5min)
+        const intervalMs = Math.max(30000, Math.min(ttl * 500, 300000));
+        console.error(`[secret-refresh] Starting background refresh timer (interval: ${Math.round(intervalMs / 1000)}s, shortest TTL: ${ttl}s)`);
+        this.refreshTimer = setInterval(async () => {
+            try {
+                const changed = await this.secretResolver.refreshProviders();
+                if (changed && this.rawEnvironments) {
+                    console.error("[secret-refresh] Secrets changed — re-resolving environment configs");
+                    // Re-resolve all environments with updated secrets
+                    for (const env of this.rawEnvironments) {
+                        const resolvedEnv = this.secretResolver.resolveObject(env);
+                        const existing = this.environments.get(resolvedEnv.name);
+                        // Check if credential fields actually changed
+                        if (existing &&
+                            (existing.password !== resolvedEnv.password ||
+                                existing.username !== resolvedEnv.username)) {
+                            console.error(`[secret-refresh] Credentials changed for '${resolvedEnv.name}' — invalidating connection pool`);
+                            // Close the stale connection pool so it gets recreated with new credentials
+                            const cached = this.connections.get(resolvedEnv.name);
+                            if (cached?.pool?.connected) {
+                                try {
+                                    await cached.pool.close();
+                                }
+                                catch { /* ignore */ }
+                            }
+                            this.connections.delete(resolvedEnv.name);
+                        }
+                        this.environments.set(resolvedEnv.name, resolvedEnv);
+                    }
+                }
+            }
+            catch (error) {
+                console.error(`[secret-refresh] Background refresh failed: ${error.message}`);
+            }
+        }, intervalMs);
+        // Don't let the timer prevent process exit
+        this.refreshTimer.unref();
+    }
+    /**
+     * Stop the background secret refresh timer.
+     */
+    stopRefreshTimer() {
+        if (this.refreshTimer) {
+            clearInterval(this.refreshTimer);
+            this.refreshTimer = undefined;
+            console.error("[secret-refresh] Stopped background refresh timer");
+        }
+    }
+    async closeAll() {
+        this.stopRefreshTimer();
+        for (const [name, { pool }] of this.connections.entries()) {
+            if (pool.connected) {
+                await pool.close();
+                console.error(`Closed connection for environment '${name}'`);
+            }
+        }
+        this.connections.clear();
+    }
+}
+// Singleton instance
+let environmentManager;
+export async function getEnvironmentManager() {
+    if (!environmentManager) {
+        const configPath = process.env.ENVIRONMENTS_CONFIG_PATH;
+        environmentManager = await EnvironmentManager.create(configPath);
+    }
+    return environmentManager;
+}
+//# sourceMappingURL=EnvironmentManager.js.map

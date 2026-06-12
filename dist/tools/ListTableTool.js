@@ -1,0 +1,89 @@
+import sql from "mssql";
+import { getEnvironmentManager } from "../config/EnvironmentManager.js";
+export class ListTableTool {
+    constructor() {
+        this.name = "list_tables";
+        this.description = "Lists tables in an MSSQL Database, optionally filtered by schema. " +
+            "For server-level access environments, you can specify a database to list tables from.";
+        this.inputSchema = {
+            type: "object",
+            properties: {
+                database: {
+                    type: "string",
+                    description: "Optional: Target database name for server-level access environments.",
+                },
+                schemas: {
+                    type: "array",
+                    description: "Schemas to filter by (optional)",
+                    items: {
+                        type: "string",
+                    },
+                    minItems: 0,
+                },
+                environment: {
+                    type: "string",
+                    description: "Optional environment name to target.",
+                },
+            },
+            required: [],
+        };
+    }
+    async run(params) {
+        try {
+            const { database, schemas, environment } = params ?? {};
+            // Validate database access if specified
+            if (database) {
+                const envManager = await getEnvironmentManager();
+                const dbCheck = envManager.isDatabaseAllowed(environment, database);
+                if (!dbCheck.allowed) {
+                    return {
+                        success: false,
+                        message: dbCheck.reason || `Access to database '${database}' is not allowed.`,
+                        error: "DATABASE_ACCESS_DENIED",
+                    };
+                }
+            }
+            const request = new sql.Request(params.pool);
+            const schemaFilter = schemas && schemas.length > 0
+                ? `AND t.TABLE_SCHEMA IN (${schemas.map((p) => `'${p.replace(/'/g, "''")}'`).join(", ")})`
+                : "";
+            // Build query with optional database prefix
+            let query;
+            if (database) {
+                const safeDbName = database.replace(/]/g, "]]");
+                query = `
+          USE [${safeDbName}];
+          SELECT t.TABLE_SCHEMA + '.' + t.TABLE_NAME AS table_name, t.TABLE_SCHEMA, t.TABLE_NAME
+          FROM INFORMATION_SCHEMA.TABLES t
+          WHERE t.TABLE_TYPE = 'BASE TABLE' ${schemaFilter}
+          ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME
+        `;
+            }
+            else {
+                query = `
+          SELECT t.TABLE_SCHEMA + '.' + t.TABLE_NAME AS table_name, t.TABLE_SCHEMA, t.TABLE_NAME
+          FROM INFORMATION_SCHEMA.TABLES t
+          WHERE t.TABLE_TYPE = 'BASE TABLE' ${schemaFilter}
+          ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME
+        `;
+            }
+            const result = await request.query(query);
+            return {
+                success: true,
+                message: `Found ${result.recordset.length} table(s)${database ? ` in [${database}]` : ""}`,
+                database: database || undefined,
+                tableCount: result.recordset.length,
+                tables: result.recordset,
+            };
+        }
+        catch (error) {
+            console.error("Error listing tables:", error);
+            return {
+                success: false,
+                message: `Failed to list tables: ${error}`,
+                error: "QUERY_FAILED",
+            };
+        }
+    }
+}
+//# sourceMappingURL=ListTableTool.js.map

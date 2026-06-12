@@ -1,0 +1,1 @@
+{"version":3,"file":"BeginTransactionTool.d.ts","sourceRoot":"","sources":["../../src/tools/BeginTransactionTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAE1D,qBAAa,oBAAqB,YAAW,IAAI;IAC/C,CAAC,GAAG,EAAE,MAAM,GAAG,GAAG,CAAC;IACnB,IAAI,SAAuB;IAC3B,WAAW,SACiO;IAC5O,WAAW,EASN,GAAG,CAAC;IAEH,GAAG,CAAC,MAAM,EAAE,GAAG;;;;;;;;;;;;;CA4BtB"}
