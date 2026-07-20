@@ -6,7 +6,7 @@ export class RawQueryTool implements Tool {
   [key: string]: any;
   name = "raw_query";
   description =
-    "Executes arbitrary SQL — including EXEC of stored procedures, multi-statement batches, and DDL. No validation. Returns all recordsets the query produced. Use with intent.";
+    "WRITE/DDL escape hatch — executes arbitrary SQL (EXEC of stored procedures, multi-statement batches, INSERT/UPDATE/DELETE, DDL). No validation. REJECTED on read-only environments with ENVIRONMENT_READONLY — usable only against a writable environment. For reads on ANY environment (including read-only ones), use read_data instead. Returns all recordsets the query produced. Use with intent.";
 
   inputSchema = {
     type: "object",
@@ -22,7 +22,8 @@ export class RawQueryTool implements Tool {
       },
       environment: {
         type: "string",
-        description: "Optional environment name to target.",
+        description:
+          "Environment to target. Must be a writable environment — read-only environments reject this tool with ENVIRONMENT_READONLY. The default environment may be read-only, so set this explicitly to a writable one.",
       },
     },
     required: ["query"],

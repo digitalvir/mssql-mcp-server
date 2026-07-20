@@ -197,8 +197,8 @@ export function buildToolRegistry(t) {
         {
             tool: t.rawQueryTool,
             name: t.rawQueryTool.name,
-            intents: ["data_read", "data_write", "schema_change"],
-            keywords: ["exec", "execute", "raw", "stored procedure", "proc", "any sql"],
+            intents: ["data_write", "schema_change"],
+            keywords: ["exec", "execute", "raw", "stored procedure", "proc"],
             requiredArgs: ["query"],
             mutatesData: true,
         },
