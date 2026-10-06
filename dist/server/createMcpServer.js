@@ -21,9 +21,11 @@ export async function startMcpServer(config) {
     const sessionId = crypto.randomUUID();
     // 3. Environment manager (reads ENVIRONMENTS_CONFIG_PATH, etc.)
     const environmentManager = await getEnvironmentManager();
-    // 3b. Configure audit sinks from environment config
+    // 3b. Configure audit sinks from environment config.
+    // Skipped when AUDIT_LOGGING=false: sinks would never receive an entry, and
+    // the default file sink would still create a logs folder in the working directory.
     const rawConfig = environmentManager.getRawConfig();
-    if (rawConfig) {
+    if (rawConfig && auditLogger.enabled) {
         const secretResolver = environmentManager.getSecretResolver();
         // Resolve secrets and create global sinks
         const globalSinkConfigs = rawConfig.auditSinks ?? [];

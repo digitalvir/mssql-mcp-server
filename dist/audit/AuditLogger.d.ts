@@ -17,7 +17,7 @@ export interface AuditLogEntry {
 }
 export declare class AuditLogger {
     private readonly logFilePath;
-    private readonly enabled;
+    readonly enabled: boolean;
     private readonly redactSensitiveData;
     /** environment name → sinks. Key "*" is global/default. */
     private sinks;
